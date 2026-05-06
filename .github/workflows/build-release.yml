@@ -1,18 +1,15 @@
 name: Build and Release
 
 on:
-  push:
-    tags:
-      - 'v*'
   workflow_dispatch:
     inputs:
       version:
         description: 'Release version (e.g. 1.0.0)'
         required: true
         default: '1.0.0'
-
-env:
-  FLUTTER_VERSION: '3.22.0'
+  push:
+    tags:
+      - 'v*'
 
 jobs:
   build-windows:
@@ -25,78 +22,60 @@ jobs:
       - name: Setup Flutter
         uses: subosito/flutter-action@v2
         with:
-          flutter-version: ${{ env.FLUTTER_VERSION }}
+          flutter-version: '3.22.0'
           channel: 'stable'
           cache: true
 
-      - name: Get Flutter dependencies
-        run: flutter pub get
-
-      - name: Download Inter fonts
-        shell: powershell
-        run: |
-          New-Item -ItemType Directory -Force -Path assets/fonts
-          $fonts = @(
-            @{name="Inter-Regular.ttf"; url="https://github.com/rsms/inter/releases/download/v4.0/Inter-4.0.zip"}
-          )
-          Invoke-WebRequest -Uri "https://github.com/rsms/inter/releases/download/v4.0/Inter-4.0.zip" -OutFile "inter.zip"
-          Expand-Archive -Path "inter.zip" -DestinationPath "inter_fonts" -Force
-          Copy-Item "inter_fonts/Inter Desktop/Inter-Regular.otf" "assets/fonts/Inter-Regular.ttf" -ErrorAction SilentlyContinue
-          Copy-Item "inter_fonts/Inter Desktop/Inter-Medium.otf" "assets/fonts/Inter-Medium.ttf" -ErrorAction SilentlyContinue
-          Copy-Item "inter_fonts/Inter Desktop/Inter-SemiBold.otf" "assets/fonts/Inter-SemiBold.ttf" -ErrorAction SilentlyContinue
-          Copy-Item "inter_fonts/Inter Desktop/Inter-Bold.otf" "assets/fonts/Inter-Bold.ttf" -ErrorAction SilentlyContinue
-          if (!(Test-Path "assets/fonts/Inter-Regular.ttf")) {
-            Invoke-WebRequest -Uri "https://raw.githubusercontent.com/google/fonts/main/ofl/inter/Inter%5Bslnt%2Cwght%5D.ttf" -OutFile "assets/fonts/Inter-Regular.ttf"
-            Copy-Item "assets/fonts/Inter-Regular.ttf" "assets/fonts/Inter-Medium.ttf"
-            Copy-Item "assets/fonts/Inter-Regular.ttf" "assets/fonts/Inter-SemiBold.ttf"
-            Copy-Item "assets/fonts/Inter-Regular.ttf" "assets/fonts/Inter-Bold.ttf"
-          }
-
-      - name: Enable Windows desktop support
+      - name: Enable Windows desktop
         run: flutter config --enable-windows-desktop
+
+      - name: Get dependencies
+        run: flutter pub get
 
       - name: Build Windows release
         run: flutter build windows --release
 
-      - name: Download Xray-core for bundling
+      - name: Download Xray-core
         shell: powershell
         run: |
-          $xrayUrl = "https://github.com/XTLS/Xray-core/releases/latest/download/Xray-windows-64.zip"
-          Invoke-WebRequest -Uri $xrayUrl -OutFile "xray.zip"
-          Expand-Archive -Path "xray.zip" -DestinationPath "build/windows/x64/runner/Release/xray" -Force
-          Write-Host "Xray core bundled successfully"
+          $url = "https://github.com/XTLS/Xray-core/releases/latest/download/Xray-windows-64.zip"
+          Invoke-WebRequest -Uri $url -OutFile "xray.zip"
+          $xrayDest = "build\windows\x64\runner\Release\xray"
+          New-Item -ItemType Directory -Force -Path $xrayDest
+          Expand-Archive -Path "xray.zip" -DestinationPath $xrayDest -Force
+          Write-Host "Xray bundled successfully"
 
       - name: Install NSIS
         run: choco install nsis -y
 
-      - name: Create NSIS installer script
+      - name: Get version tag
+        id: ver
         shell: powershell
         run: |
-          $version = "${{ github.event.inputs.version || '1.0.0' }}"
+          $v = "${{ github.event.inputs.version }}"
+          if (-not $v) { $v = "${{ github.ref_name }}" -replace '^v','' }
+          if (-not $v) { $v = "1.0.0" }
+          echo "VERSION=$v" >> $env:GITHUB_OUTPUT
+          echo "Version: $v"
+
+      - name: Create NSIS script
+        shell: powershell
+        run: |
+          $v = "${{ steps.ver.outputs.VERSION }}"
           $nsis = @"
           !define APP_NAME "FTP VPN Client"
-          !define APP_VERSION "$version"
-          !define APP_PUBLISHER "FTPVPN"
-          !define APP_URL "https://ftpvpn.lol"
+          !define APP_VERSION "$v"
           !define APP_EXE "ftp_client.exe"
-          !define INSTALL_DIR "`$PROGRAMFILES64\FTP VPN Client"
 
-          Name "`${APP_NAME}"
-          OutFile "FTPVPNClient-Setup-v$version.exe"
-          InstallDir "`${INSTALL_DIR}"
-          InstallDirRegKey HKLM "Software\`${APP_NAME}" "Install_Dir"
+          Name "`${APP_NAME} v`${APP_VERSION}"
+          OutFile "FTPVPNClient-Setup-v$v.exe"
+          InstallDir "`$PROGRAMFILES64\FTP VPN Client"
           RequestExecutionLevel admin
           SetCompressor lzma
           Unicode True
 
           !include "MUI2.nsh"
-
           !define MUI_ABORTWARNING
-          !define MUI_ICON "build\windows\x64\runner\Release\app_icon.ico"
-          !define MUI_UNICON "build\windows\x64\runner\Release\app_icon.ico"
-          !define MUI_BGCOLOR "0D0D1A"
-          !define MUI_TEXTCOLOR "FFFFFF"
-          !define MUI_HEADERIMAGE_BITMAP_NOSTRETCH
 
           !insertmacro MUI_PAGE_WELCOME
           !insertmacro MUI_PAGE_DIRECTORY
@@ -108,116 +87,73 @@ jobs:
           !insertmacro MUI_LANGUAGE "Russian"
           !insertmacro MUI_LANGUAGE "English"
 
-          Section "Main" SecMain
+          Section "Main"
             SetOutPath "`$INSTDIR"
             File /r "build\windows\x64\runner\Release\*.*"
-            WriteRegStr HKLM "Software\Microsoft\Windows\CurrentVersion\Uninstall\`${APP_NAME}" "DisplayName" "`${APP_NAME}"
-            WriteRegStr HKLM "Software\Microsoft\Windows\CurrentVersion\Uninstall\`${APP_NAME}" "UninstallString" "`$INSTDIR\uninstall.exe"
-            WriteRegStr HKLM "Software\Microsoft\Windows\CurrentVersion\Uninstall\`${APP_NAME}" "DisplayVersion" "`${APP_VERSION}"
-            WriteRegStr HKLM "Software\Microsoft\Windows\CurrentVersion\Uninstall\`${APP_NAME}" "Publisher" "`${APP_PUBLISHER}"
+            WriteRegStr HKLM "Software\Microsoft\Windows\CurrentVersion\Uninstall\FTPVPNClient" "DisplayName" "FTP VPN Client"
+            WriteRegStr HKLM "Software\Microsoft\Windows\CurrentVersion\Uninstall\FTPVPNClient" "UninstallString" "`$INSTDIR\uninstall.exe"
+            WriteRegStr HKLM "Software\Microsoft\Windows\CurrentVersion\Uninstall\FTPVPNClient" "DisplayVersion" "$v"
+            WriteRegStr HKLM "Software\Microsoft\Windows\CurrentVersion\Uninstall\FTPVPNClient" "Publisher" "FTPVPN"
             WriteUninstaller "`$INSTDIR\uninstall.exe"
-            CreateDirectory "`$SMPROGRAMS\`${APP_NAME}"
-            CreateShortcut "`$SMPROGRAMS\`${APP_NAME}\`${APP_NAME}.lnk" "`$INSTDIR\`${APP_EXE}"
-            CreateShortcut "`$DESKTOP\`${APP_NAME}.lnk" "`$INSTDIR\`${APP_EXE}"
+            CreateDirectory "`$SMPROGRAMS\FTP VPN Client"
+            CreateShortcut "`$SMPROGRAMS\FTP VPN Client\FTP VPN Client.lnk" "`$INSTDIR\`${APP_EXE}"
+            CreateShortcut "`$DESKTOP\FTP VPN Client.lnk" "`$INSTDIR\`${APP_EXE}"
           SectionEnd
 
           Section "Uninstall"
             Delete "`$INSTDIR\uninstall.exe"
             RMDir /r "`$INSTDIR"
-            Delete "`$SMPROGRAMS\`${APP_NAME}\`${APP_NAME}.lnk"
-            RMDir "`$SMPROGRAMS\`${APP_NAME}"
-            Delete "`$DESKTOP\`${APP_NAME}.lnk"
-            DeleteRegKey HKLM "Software\Microsoft\Windows\CurrentVersion\Uninstall\`${APP_NAME}"
+            Delete "`$SMPROGRAMS\FTP VPN Client\FTP VPN Client.lnk"
+            RMDir "`$SMPROGRAMS\FTP VPN Client"
+            Delete "`$DESKTOP\FTP VPN Client.lnk"
+            DeleteRegKey HKLM "Software\Microsoft\Windows\CurrentVersion\Uninstall\FTPVPNClient"
           SectionEnd
           "@
           $nsis | Out-File -FilePath "installer.nsi" -Encoding UTF8
 
-      - name: Build NSIS installer
+      - name: Build installer
         run: makensis installer.nsi
 
       - name: Create portable ZIP
         shell: powershell
         run: |
-          $version = "${{ github.event.inputs.version || '1.0.0' }}"
-          Compress-Archive -Path "build/windows/x64/runner/Release/*" -DestinationPath "FTPVPNClient-Portable-v$version-Windows.zip"
+          $v = "${{ steps.ver.outputs.VERSION }}"
+          Compress-Archive -Path "build\windows\x64\runner\Release\*" -DestinationPath "FTPVPNClient-Portable-v$v-Windows.zip"
 
-      - name: Get version
-        id: version
-        shell: powershell
-        run: |
-          $version = "${{ github.event.inputs.version || github.ref_name || '1.0.0' }}"
-          $version = $version -replace '^v', ''
-          echo "VERSION=$version" >> $env:GITHUB_OUTPUT
-
-      - name: Create Release
+      - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: v${{ steps.version.outputs.VERSION }}
-          name: FTP VPN Client v${{ steps.version.outputs.VERSION }}
+          tag_name: v${{ steps.ver.outputs.VERSION }}
+          name: "FTP VPN Client v${{ steps.ver.outputs.VERSION }}"
           draft: false
           prerelease: false
           body: |
-            ## FTP VPN Client v${{ steps.version.outputs.VERSION }}
+            ## FTP VPN Client v${{ steps.ver.outputs.VERSION }} для Windows
 
-            Быстрый и безопасный VPN клиент для Windows.
-
-            ### Что нового
-            - Поддержка VLESS, VMess, Shadowsocks, Trojan
-            - Встроенный xray-core
-            - Автоматическая настройка системного прокси
-            - Мониторинг трафика в реальном времени
+            Быстрый и безопасный VPN клиент с поддержкой VLESS, VMess, Shadowsocks, Trojan.
 
             ### Установка
-            - **Установщик (рекомендуется):** Скачайте `FTPVPNClient-Setup-v${{ steps.version.outputs.VERSION }}.exe` и запустите от имени администратора
-            - **Portable:** Скачайте ZIP архив, распакуйте и запустите `ftp_client.exe`
+            1. Скачайте **установщик** `FTPVPNClient-Setup-v${{ steps.ver.outputs.VERSION }}.exe`
+            2. Запустите от имени **Администратора**
+            3. При первом запуске: `Settings` → `Download` (Xray Core)
+            4. Добавьте конфиг в `Configs` → `Add` и вставьте VLESS/VMess URI
+            5. Нажмите кнопку подключения на главном экране
+
+            ### Portable
+            Распакуйте ZIP и запустите `ftp_client.exe` — установка не нужна.
 
             ### Требования
-            - Windows 10/11 (64-bit)
-            - Права администратора (для настройки системного прокси)
-          files: |
-            FTPVPNClient-Setup-v${{ steps.version.outputs.VERSION }}.exe
-            FTPVPNClient-Portable-v${{ steps.version.outputs.VERSION }}-Windows.zip
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+            - Windows 10 / 11 (64-bit)
+            - Права администратора
 
-  build-linux:
-    name: Build Linux
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - uses: subosito/flutter-action@v2
-        with:
-          flutter-version: ${{ env.FLUTTER_VERSION }}
-          channel: 'stable'
-          cache: true
-      - name: Install Linux dependencies
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y clang cmake ninja-build pkg-config libgtk-3-dev liblzma-dev libstdc++-12-dev
-      - name: Setup fonts
-        run: |
-          mkdir -p assets/fonts
-          wget -q "https://raw.githubusercontent.com/google/fonts/main/ofl/inter/Inter%5Bslnt%2Cwght%5D.ttf" -O assets/fonts/Inter-Regular.ttf
-          cp assets/fonts/Inter-Regular.ttf assets/fonts/Inter-Medium.ttf
-          cp assets/fonts/Inter-Regular.ttf assets/fonts/Inter-SemiBold.ttf
-          cp assets/fonts/Inter-Regular.ttf assets/fonts/Inter-Bold.ttf
-      - run: flutter config --enable-linux-desktop
-      - run: flutter pub get
-      - run: flutter build linux --release
-      - name: Download Xray Linux
-        run: |
-          wget -q "https://github.com/XTLS/Xray-core/releases/latest/download/Xray-linux-64.zip" -O xray.zip
-          mkdir -p build/linux/x64/release/bundle/xray
-          unzip -q xray.zip -d build/linux/x64/release/bundle/xray/
-      - name: Create Linux package
-        run: |
-          VERSION="${{ github.event.inputs.version || '1.0.0' }}"
-          cd build/linux/x64/release/
-          tar -czf "../../../../FTPVPNClient-v${VERSION}-Linux.tar.gz" bundle/
-      - name: Upload to Release
-        uses: softprops/action-gh-release@v2
-        with:
-          tag_name: v${{ github.event.inputs.version || '1.0.0' }}
-          files: FTPVPNClient-v${{ github.event.inputs.version || '1.0.0' }}-Linux.tar.gz
+            ### Поддерживаемые протоколы
+            - VLESS (включая Reality/XTLS)
+            - VMess
+            - Shadowsocks
+            - Trojan
+            - Hysteria2
+          files: |
+            FTPVPNClient-Setup-v${{ steps.ver.outputs.VERSION }}.exe
+            FTPVPNClient-Portable-v${{ steps.ver.outputs.VERSION }}-Windows.zip
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
