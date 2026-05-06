@@ -29,14 +29,14 @@ jobs:
       - name: Enable Windows desktop
         run: flutter config --enable-windows-desktop
 
-      - name: Bootstrap Windows runner via flutter create
-        shell: powershell
+      - name: Bootstrap Windows runner
+        shell: pwsh
         run: |
           flutter create --platforms=windows --project-name=ftp_client temp_bootstrap
-          Remove-Item -Recurse -Force windows -ErrorAction SilentlyContinue
+          if (Test-Path windows) { Remove-Item -Recurse -Force windows }
           Copy-Item -Recurse temp_bootstrap\windows .\windows
           Remove-Item -Recurse -Force temp_bootstrap
-          Write-Host "Windows runner bootstrapped successfully"
+          Write-Host "Windows runner ready"
 
       - name: Get dependencies
         run: flutter pub get
@@ -45,132 +45,78 @@ jobs:
         run: flutter build windows --release
 
       - name: Download Xray-core
-        shell: powershell
+        shell: pwsh
         run: |
           $url = "https://github.com/XTLS/Xray-core/releases/latest/download/Xray-windows-64.zip"
-          Invoke-WebRequest -Uri $url -OutFile "xray.zip"
-          $dest = "build\windows\x64\runner\Release\xray"
-          New-Item -ItemType Directory -Force -Path $dest
-          Expand-Archive -Path "xray.zip" -DestinationPath $dest -Force
+          Invoke-WebRequest -Uri $url -OutFile xray.zip -UseBasicParsing
+          New-Item -ItemType Directory -Force "build\windows\x64\runner\Release\xray" | Out-Null
+          Expand-Archive xray.zip "build\windows\x64\runner\Release\xray" -Force
+          Remove-Item xray.zip
           Write-Host "Xray bundled"
 
       - name: Get version
         id: ver
-        shell: powershell
+        shell: pwsh
         run: |
           $v = "${{ github.event.inputs.version }}"
-          if (-not $v -or $v -eq '') { $v = ("${{ github.ref_name }}" -replace '^v','') }
-          if (-not $v -or $v -eq '') { $v = "1.0.0" }
-          Write-Host "Version: $v"
+          if (!$v) { $v = ("${{ github.ref_name }}" -replace '^v') }
+          if (!$v) { $v = "1.0.0" }
           echo "VERSION=$v" >> $env:GITHUB_OUTPUT
+          Write-Host "Building version: $v"
 
-      - name: Install NSIS and build installer
-        shell: powershell
+      - name: Build Inno Setup installer
+        shell: pwsh
         run: |
           $v = "${{ steps.ver.outputs.VERSION }}"
-
-          # Install NSIS
-          choco install nsis -y --no-progress
-          $nsisPath = "C:\Program Files (x86)\NSIS\makensis.exe"
-          if (-not (Test-Path $nsisPath)) {
-            $nsisPath = (Get-Command makensis -ErrorAction SilentlyContinue)?.Source
-          }
-          Write-Host "NSIS path: $nsisPath"
-
-          # Create installer script
-          $script = @"
-          !define APP_NAME "FTP VPN Client"
-          !define APP_VERSION "$v"
-          !define APP_EXE "ftp_client.exe"
-
-          Name "`${APP_NAME} v`${APP_VERSION}"
-          OutFile "FTPVPNClient-Setup-v$v.exe"
-          InstallDir "`$PROGRAMFILES64\FTP VPN Client"
-          RequestExecutionLevel admin
-          SetCompressor lzma
-          Unicode True
-
-          !include "MUI2.nsh"
-          !define MUI_ABORTWARNING
-
-          !insertmacro MUI_PAGE_WELCOME
-          !insertmacro MUI_PAGE_DIRECTORY
-          !insertmacro MUI_PAGE_INSTFILES
-          !insertmacro MUI_PAGE_FINISH
-          !insertmacro MUI_UNPAGE_CONFIRM
-          !insertmacro MUI_UNPAGE_INSTFILES
-
-          !insertmacro MUI_LANGUAGE "Russian"
-          !insertmacro MUI_LANGUAGE "English"
-
-          Section "Main"
-            SetOutPath "`$INSTDIR"
-            File /r "build\windows\x64\runner\Release\*.*"
-            WriteRegStr HKLM "Software\Microsoft\Windows\CurrentVersion\Uninstall\FTPVPNClient" "DisplayName" "`${APP_NAME}"
-            WriteRegStr HKLM "Software\Microsoft\Windows\CurrentVersion\Uninstall\FTPVPNClient" "UninstallString" "`$INSTDIR\uninstall.exe"
-            WriteRegStr HKLM "Software\Microsoft\Windows\CurrentVersion\Uninstall\FTPVPNClient" "DisplayVersion" "$v"
-            WriteRegStr HKLM "Software\Microsoft\Windows\CurrentVersion\Uninstall\FTPVPNClient" "Publisher" "FTPVPN"
-            WriteUninstaller "`$INSTDIR\uninstall.exe"
-            CreateDirectory "`$SMPROGRAMS\`${APP_NAME}"
-            CreateShortcut "`$SMPROGRAMS\`${APP_NAME}\`${APP_NAME}.lnk" "`$INSTDIR\`${APP_EXE}"
-            CreateShortcut "`$DESKTOP\`${APP_NAME}.lnk" "`$INSTDIR\`${APP_EXE}"
-          SectionEnd
-
-          Section "Uninstall"
-            Delete "`$INSTDIR\uninstall.exe"
-            RMDir /r "`$INSTDIR"
-            Delete "`$SMPROGRAMS\`${APP_NAME}\`${APP_NAME}.lnk"
-            RMDir "`$SMPROGRAMS\`${APP_NAME}"
-            Delete "`$DESKTOP\`${APP_NAME}.lnk"
-            DeleteRegKey HKLM "Software\Microsoft\Windows\CurrentVersion\Uninstall\FTPVPNClient"
-          SectionEnd
-          "@
-          $script | Out-File -FilePath "installer.nsi" -Encoding UTF8
-
-          # Run makensis with full path
-          & $nsisPath installer.nsi
-          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          Write-Host "Installer built: FTPVPNClient-Setup-v$v.exe"
+          $buildDir = (Resolve-Path "build\windows\x64\runner\Release").Path
+          $iscc = "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe"
+          if (!(Test-Path $iscc)) { $iscc = "ISCC.exe" }
+          & $iscc /DAppVersion=$v "/DBuildDir=$buildDir" installer\setup.iss /O"."
+          if ($LASTEXITCODE -ne 0) { throw "Inno Setup failed with exit code $LASTEXITCODE" }
+          Get-ChildItem *.exe
 
       - name: Create portable ZIP
-        shell: powershell
+        shell: pwsh
         run: |
           $v = "${{ steps.ver.outputs.VERSION }}"
-          Compress-Archive -Path "build\windows\x64\runner\Release\*" -DestinationPath "FTPVPNClient-Portable-v$v-Windows.zip"
-          Write-Host "Portable ZIP created"
+          Compress-Archive "build\windows\x64\runner\Release\*" "FTPVPNClient-Portable-v$v-Windows.zip" -Force
+          Write-Host "Portable ZIP ready"
 
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
         with:
           tag_name: v${{ steps.ver.outputs.VERSION }}
-          name: "FTP VPN Client v${{ steps.ver.outputs.VERSION }}"
+          name: FTP VPN Client v${{ steps.ver.outputs.VERSION }}
           draft: false
           prerelease: false
           body: |
             ## FTP VPN Client v${{ steps.ver.outputs.VERSION }} для Windows
 
-            Быстрый и безопасный VPN клиент с поддержкой VLESS, VMess, Shadowsocks, Trojan.
+            Быстрый и безопасный VPN клиент — аналог Hiddify. Поддерживает VLESS, VMess, Shadowsocks, Trojan.
 
-            ### Установка
-            1. Скачайте **установщик** `FTPVPNClient-Setup-v${{ steps.ver.outputs.VERSION }}.exe`
+            ---
+
+            ### Установка (рекомендуется)
+            1. Скачайте `FTPVPNClient-Setup-v${{ steps.ver.outputs.VERSION }}.exe`
             2. Запустите от имени **Администратора**
-            3. При первом запуске: `Settings` → `Download` (Xray Core)
-            4. Добавьте конфиг в `Configs` → `Add`, вставьте VLESS/VMess URI
-            5. Нажмите кнопку подключения на главном экране
+            3. Следуйте установщику
 
-            ### Portable
-            Распакуйте ZIP архив и запустите `ftp_client.exe` — установка не нужна.
+            ### После установки
+            1. Settings → **Download** (скачать Xray Core)
+            2. Configs → **Add** → вставьте VLESS/VMess URI
+            3. Home → нажмите кнопку подключения
+
+            ### Portable (без установки)
+            Распакуйте `FTPVPNClient-Portable-*.zip` и запустите `ftp_client.exe`
+
+            ---
 
             ### Требования
             - Windows 10 / 11 (64-bit)
-            - Права администратора (для системного прокси)
+            - Права администратора
 
-            ### Поддерживаемые протоколы
-            - VLESS (включая Reality / XTLS-Vision)
-            - VMess
-            - Shadowsocks
-            - Trojan
-            - Hysteria2
+            ### Протоколы
+            `VLESS` `VLESS+Reality` `VMess` `Shadowsocks` `Trojan` `Hysteria2`
           files: |
             FTPVPNClient-Setup-v${{ steps.ver.outputs.VERSION }}.exe
             FTPVPNClient-Portable-v${{ steps.ver.outputs.VERSION }}-Windows.zip
