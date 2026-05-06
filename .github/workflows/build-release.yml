@@ -11,6 +11,9 @@ on:
     tags:
       - 'v*'
 
+permissions:
+  contents: write
+
 jobs:
   build-windows:
     name: Build Windows
@@ -19,10 +22,9 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@v4
 
-      - name: Setup Flutter
+      - name: Setup Flutter (stable)
         uses: subosito/flutter-action@v2
         with:
-          flutter-version: '3.22.0'
           channel: 'stable'
           cache: true
 
@@ -49,8 +51,9 @@ jobs:
         run: |
           $url = "https://github.com/XTLS/Xray-core/releases/latest/download/Xray-windows-64.zip"
           Invoke-WebRequest -Uri $url -OutFile xray.zip -UseBasicParsing
-          New-Item -ItemType Directory -Force "build\windows\x64\runner\Release\xray" | Out-Null
-          Expand-Archive xray.zip "build\windows\x64\runner\Release\xray" -Force
+          $dest = "build\windows\x64\runner\Release\xray"
+          New-Item -ItemType Directory -Force $dest | Out-Null
+          Expand-Archive xray.zip $dest -Force
           Remove-Item xray.zip
           Write-Host "Xray bundled"
 
@@ -59,10 +62,13 @@ jobs:
         shell: pwsh
         run: |
           $v = "${{ github.event.inputs.version }}"
-          if (!$v) { $v = ("${{ github.ref_name }}" -replace '^v') }
-          if (!$v) { $v = "1.0.0" }
-          echo "VERSION=$v" >> $env:GITHUB_OUTPUT
-          Write-Host "Building version: $v"
+          if (!$v -or $v -eq '') {
+            $tag = "${{ github.ref_name }}"
+            $v = $tag -replace '^v',''
+          }
+          if (!$v -or $v -eq '') { $v = "1.0.0" }
+          Write-Host "Version: $v"
+          "VERSION=$v" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
 
       - name: Build Inno Setup installer
         shell: pwsh
@@ -70,10 +76,16 @@ jobs:
           $v = "${{ steps.ver.outputs.VERSION }}"
           $buildDir = (Resolve-Path "build\windows\x64\runner\Release").Path
           $iscc = "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe"
-          if (!(Test-Path $iscc)) { $iscc = "ISCC.exe" }
+          if (!(Test-Path $iscc)) {
+            Write-Host "Inno Setup 6 not found at default path, searching..."
+            $found = Get-ChildItem "C:\Program Files*" -Filter "ISCC.exe" -Recurse -ErrorAction SilentlyContinue | Select-Object -First 1
+            if ($found) { $iscc = $found.FullName } else { $iscc = "ISCC.exe" }
+          }
+          Write-Host "Using ISCC: $iscc"
           & $iscc /DAppVersion=$v "/DBuildDir=$buildDir" installer\setup.iss /O"."
-          if ($LASTEXITCODE -ne 0) { throw "Inno Setup failed with exit code $LASTEXITCODE" }
-          Get-ChildItem *.exe
+          if ($LASTEXITCODE -ne 0) { throw "Inno Setup failed: $LASTEXITCODE" }
+          Write-Host "Installer built"
+          Get-ChildItem *.exe | Select-Object Name, Length
 
       - name: Create portable ZIP
         shell: pwsh
