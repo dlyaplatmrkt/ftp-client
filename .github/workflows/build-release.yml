@@ -32,14 +32,11 @@ jobs:
       - name: Bootstrap Windows runner via flutter create
         shell: powershell
         run: |
-          # Create a temp project to get proper Windows runner boilerplate
           flutter create --platforms=windows --project-name=ftp_client temp_bootstrap
-          # Copy the generated windows/ directory (runner + flutter cmake)
           Remove-Item -Recurse -Force windows -ErrorAction SilentlyContinue
           Copy-Item -Recurse temp_bootstrap\windows .\windows
           Remove-Item -Recurse -Force temp_bootstrap
-          Write-Host "Windows runner bootstrapped"
-          Get-ChildItem windows\runner
+          Write-Host "Windows runner bootstrapped successfully"
 
       - name: Get dependencies
         run: flutter pub get
@@ -57,9 +54,6 @@ jobs:
           Expand-Archive -Path "xray.zip" -DestinationPath $dest -Force
           Write-Host "Xray bundled"
 
-      - name: Install NSIS
-        run: choco install nsis -y
-
       - name: Get version
         id: ver
         shell: powershell
@@ -70,10 +64,20 @@ jobs:
           Write-Host "Version: $v"
           echo "VERSION=$v" >> $env:GITHUB_OUTPUT
 
-      - name: Create NSIS installer script
+      - name: Install NSIS and build installer
         shell: powershell
         run: |
           $v = "${{ steps.ver.outputs.VERSION }}"
+
+          # Install NSIS
+          choco install nsis -y --no-progress
+          $nsisPath = "C:\Program Files (x86)\NSIS\makensis.exe"
+          if (-not (Test-Path $nsisPath)) {
+            $nsisPath = (Get-Command makensis -ErrorAction SilentlyContinue)?.Source
+          }
+          Write-Host "NSIS path: $nsisPath"
+
+          # Create installer script
           $script = @"
           !define APP_NAME "FTP VPN Client"
           !define APP_VERSION "$v"
@@ -122,16 +126,18 @@ jobs:
           SectionEnd
           "@
           $script | Out-File -FilePath "installer.nsi" -Encoding UTF8
-          Write-Host "NSIS script created"
 
-      - name: Build NSIS installer
-        run: makensis installer.nsi
+          # Run makensis with full path
+          & $nsisPath installer.nsi
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          Write-Host "Installer built: FTPVPNClient-Setup-v$v.exe"
 
       - name: Create portable ZIP
         shell: powershell
         run: |
           $v = "${{ steps.ver.outputs.VERSION }}"
           Compress-Archive -Path "build\windows\x64\runner\Release\*" -DestinationPath "FTPVPNClient-Portable-v$v-Windows.zip"
+          Write-Host "Portable ZIP created"
 
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
