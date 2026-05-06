@@ -29,6 +29,18 @@ jobs:
       - name: Enable Windows desktop
         run: flutter config --enable-windows-desktop
 
+      - name: Bootstrap Windows runner via flutter create
+        shell: powershell
+        run: |
+          # Create a temp project to get proper Windows runner boilerplate
+          flutter create --platforms=windows --project-name=ftp_client temp_bootstrap
+          # Copy the generated windows/ directory (runner + flutter cmake)
+          Remove-Item -Recurse -Force windows -ErrorAction SilentlyContinue
+          Copy-Item -Recurse temp_bootstrap\windows .\windows
+          Remove-Item -Recurse -Force temp_bootstrap
+          Write-Host "Windows runner bootstrapped"
+          Get-ChildItem windows\runner
+
       - name: Get dependencies
         run: flutter pub get
 
@@ -40,29 +52,29 @@ jobs:
         run: |
           $url = "https://github.com/XTLS/Xray-core/releases/latest/download/Xray-windows-64.zip"
           Invoke-WebRequest -Uri $url -OutFile "xray.zip"
-          $xrayDest = "build\windows\x64\runner\Release\xray"
-          New-Item -ItemType Directory -Force -Path $xrayDest
-          Expand-Archive -Path "xray.zip" -DestinationPath $xrayDest -Force
-          Write-Host "Xray bundled successfully"
+          $dest = "build\windows\x64\runner\Release\xray"
+          New-Item -ItemType Directory -Force -Path $dest
+          Expand-Archive -Path "xray.zip" -DestinationPath $dest -Force
+          Write-Host "Xray bundled"
 
       - name: Install NSIS
         run: choco install nsis -y
 
-      - name: Get version tag
+      - name: Get version
         id: ver
         shell: powershell
         run: |
           $v = "${{ github.event.inputs.version }}"
-          if (-not $v) { $v = "${{ github.ref_name }}" -replace '^v','' }
-          if (-not $v) { $v = "1.0.0" }
+          if (-not $v -or $v -eq '') { $v = ("${{ github.ref_name }}" -replace '^v','') }
+          if (-not $v -or $v -eq '') { $v = "1.0.0" }
+          Write-Host "Version: $v"
           echo "VERSION=$v" >> $env:GITHUB_OUTPUT
-          echo "Version: $v"
 
-      - name: Create NSIS script
+      - name: Create NSIS installer script
         shell: powershell
         run: |
           $v = "${{ steps.ver.outputs.VERSION }}"
-          $nsis = @"
+          $script = @"
           !define APP_NAME "FTP VPN Client"
           !define APP_VERSION "$v"
           !define APP_EXE "ftp_client.exe"
@@ -90,28 +102,29 @@ jobs:
           Section "Main"
             SetOutPath "`$INSTDIR"
             File /r "build\windows\x64\runner\Release\*.*"
-            WriteRegStr HKLM "Software\Microsoft\Windows\CurrentVersion\Uninstall\FTPVPNClient" "DisplayName" "FTP VPN Client"
+            WriteRegStr HKLM "Software\Microsoft\Windows\CurrentVersion\Uninstall\FTPVPNClient" "DisplayName" "`${APP_NAME}"
             WriteRegStr HKLM "Software\Microsoft\Windows\CurrentVersion\Uninstall\FTPVPNClient" "UninstallString" "`$INSTDIR\uninstall.exe"
             WriteRegStr HKLM "Software\Microsoft\Windows\CurrentVersion\Uninstall\FTPVPNClient" "DisplayVersion" "$v"
             WriteRegStr HKLM "Software\Microsoft\Windows\CurrentVersion\Uninstall\FTPVPNClient" "Publisher" "FTPVPN"
             WriteUninstaller "`$INSTDIR\uninstall.exe"
-            CreateDirectory "`$SMPROGRAMS\FTP VPN Client"
-            CreateShortcut "`$SMPROGRAMS\FTP VPN Client\FTP VPN Client.lnk" "`$INSTDIR\`${APP_EXE}"
-            CreateShortcut "`$DESKTOP\FTP VPN Client.lnk" "`$INSTDIR\`${APP_EXE}"
+            CreateDirectory "`$SMPROGRAMS\`${APP_NAME}"
+            CreateShortcut "`$SMPROGRAMS\`${APP_NAME}\`${APP_NAME}.lnk" "`$INSTDIR\`${APP_EXE}"
+            CreateShortcut "`$DESKTOP\`${APP_NAME}.lnk" "`$INSTDIR\`${APP_EXE}"
           SectionEnd
 
           Section "Uninstall"
             Delete "`$INSTDIR\uninstall.exe"
             RMDir /r "`$INSTDIR"
-            Delete "`$SMPROGRAMS\FTP VPN Client\FTP VPN Client.lnk"
-            RMDir "`$SMPROGRAMS\FTP VPN Client"
-            Delete "`$DESKTOP\FTP VPN Client.lnk"
+            Delete "`$SMPROGRAMS\`${APP_NAME}\`${APP_NAME}.lnk"
+            RMDir "`$SMPROGRAMS\`${APP_NAME}"
+            Delete "`$DESKTOP\`${APP_NAME}.lnk"
             DeleteRegKey HKLM "Software\Microsoft\Windows\CurrentVersion\Uninstall\FTPVPNClient"
           SectionEnd
           "@
-          $nsis | Out-File -FilePath "installer.nsi" -Encoding UTF8
+          $script | Out-File -FilePath "installer.nsi" -Encoding UTF8
+          Write-Host "NSIS script created"
 
-      - name: Build installer
+      - name: Build NSIS installer
         run: makensis installer.nsi
 
       - name: Create portable ZIP
@@ -136,18 +149,18 @@ jobs:
             1. Скачайте **установщик** `FTPVPNClient-Setup-v${{ steps.ver.outputs.VERSION }}.exe`
             2. Запустите от имени **Администратора**
             3. При первом запуске: `Settings` → `Download` (Xray Core)
-            4. Добавьте конфиг в `Configs` → `Add` и вставьте VLESS/VMess URI
+            4. Добавьте конфиг в `Configs` → `Add`, вставьте VLESS/VMess URI
             5. Нажмите кнопку подключения на главном экране
 
             ### Portable
-            Распакуйте ZIP и запустите `ftp_client.exe` — установка не нужна.
+            Распакуйте ZIP архив и запустите `ftp_client.exe` — установка не нужна.
 
             ### Требования
             - Windows 10 / 11 (64-bit)
-            - Права администратора
+            - Права администратора (для системного прокси)
 
             ### Поддерживаемые протоколы
-            - VLESS (включая Reality/XTLS)
+            - VLESS (включая Reality / XTLS-Vision)
             - VMess
             - Shadowsocks
             - Trojan
